@@ -1,0 +1,533 @@
+<style>
+    @import url("https://webgl2fundamentals.org/webgl/resources/webgl-tutorials.css");
+
+    body {
+        margin: 0;
+    }
+
+    canvas {
+        width: 100vw;
+        height: 100vh;
+        display: block;
+    }
+</style>
+
+<canvas id="canvas"></canvas>
+<div id="uiContainer">
+    <div id="ui">
+        <div id="targetAngle"></div>
+        <div id="targetHeight"></div>
+    </div>
+</div>
+<!--
+for most samples webgl-utils only provides shader compiling/linking and
+canvas resizing because why clutter the examples with code that's the same in every sample.
+See https://webgl2fundamentals.org/webgl/lessons/webgl-boilerplate.html
+and https://webgl2fundamentals.org/webgl/lessons/webgl-resizing-the-canvas.html
+for webgl-utils, m3, m4, and webgl-lessons-ui.
+-->
+<script src="https://webgl2fundamentals.org/webgl/resources/webgl-utils.js"></script>
+<script src="https://webgl2fundamentals.org/webgl/resources/webgl-lessons-ui.js"></script>
+<script src="https://webgl2fundamentals.org/webgl/resources/m4.js"></script>
+<script src="https://webgl2fundamentals.org/webgl/resources/headdata.js"></script>
+
+
+<script>
+    "use strict";
+
+    {//main shaders
+    var vertexShaderSource = `#version 300 es
+
+in vec4 a_position;
+in vec4 a_color;
+uniform mat4 u_matrix;
+
+out vec4 v_color;
+
+void main() {
+  gl_Position = u_matrix * a_position;
+  v_color = a_color;
+}
+`;
+
+    var fragmentShaderSource = `#version 300 es
+precision highp float;
+
+in vec4 v_color;
+out vec4 outColor;
+
+void main() {
+  outColor = round(v_color * 4.0) / 4.0;
+}
+`;
+    }
+
+    var snowVS = `#version 300 es
+
+    in vec2 a_snowPosition;
+
+void main() {
+    gl_Position = vec4(a_snowPosition, 1.0, 1.0);
+}
+`;
+
+    var snowFS = `#version 300 es
+precision highp float;
+    
+uniform float u_time;
+uniform vec2 u_resolution;
+
+out vec4 outColor;
+
+float snow(vec2 uv, float scale) {
+    float w = smoothstep(1.0, 0.0, -uv.y * (scale / 10.0));
+    
+    if (w < 0.1) {
+      return 0.0;
+    }
+    
+    float c = u_time / scale;
+    
+    // Fall to left:
+    // uv += clock;
+    
+    uv.y += c;
+    uv.x -= c;
+
+    uv.y += c * 2.0;
+    uv.x += cos(uv.y + u_time * 0.5) / scale;
+    uv   *= scale;
+
+    vec2 s = floor(uv);
+    vec2 f = fract(uv);
+    vec2 p = vec2(0.0);
+
+    float k = 3.0;
+    float d = 0.0;
+    
+    p = 0.5 + 0.35 * sin(11.0 * fract(sin((s + p + scale) * mat2(7, 3, 6, 5)) * 5.0)) - f;
+    d = length(p);
+    k = min(d, k);
+
+    k = smoothstep(0.0, k, sin(f.x + f.y) * 0.01);
+    return k * w;
+  }
+
+void main() {
+    float size = mix(min(u_resolution.x, u_resolution.y), max(u_resolution.x, u_resolution.y), 0.5);
+    vec2 uv = (gl_FragCoord.xy * 2.0 - u_resolution.xy) / size;
+    float c = smoothstep(1.0, 0.0, clamp(uv.y * 0.1 + 0.75, 0.0, 0.75));
+
+    c += snow(uv, 30.0) * 0.3;
+    c += snow(uv, 20.0) * 0.5;
+    c += snow(uv, 15.0) * 0.8;
+
+    c += snow(uv, 6.0);
+    c += snow(uv, 5.0);
+
+    outColor = vec4(vec3(c), 1.0); // 0.0
+}
+  
+`;
+
+
+    function main() {
+        // Get A WebGL context
+        /** @type {HTMLCanvasElement} */
+        var canvas = document.querySelector("#canvas");
+        var gl = canvas.getContext("webgl2");
+        if (!gl) {
+            return;
+        }
+
+        /////// main shader setting ///////
+        var program = webglUtils.createProgramFromSources(gl, [vertexShaderSource, fragmentShaderSource]);
+
+        var positionAttributeLocation = gl.getAttribLocation(program, "a_position");
+        var colorAttributeLocation = gl.getAttribLocation(program, "a_color");
+        var matrixLocation = gl.getUniformLocation(program, "u_matrix");
+
+        var positionBuffer = gl.createBuffer();
+        var vao = gl.createVertexArray();
+        gl.bindVertexArray(vao);
+        gl.enableVertexAttribArray(positionAttributeLocation);
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        var numVertices = setGeometry(gl);
+
+        // Tell the attribute how to get data out of positionBuffer (ARRAY_BUFFER)
+        var size = 3; // 3 components per iteration
+        var type = gl.FLOAT; // the data is 32bit floats
+        var normalize = false; // don't normalize the data
+        var stride = 0; // 0 = move forward size * sizeof(type) each iteration to get the next position
+        var offset = 0; // start at the beginning of the buffer
+        gl.vertexAttribPointer(
+            positionAttributeLocation, size, type, normalize, stride, offset);
+
+        gl.disableVertexAttribArray(positionAttributeLocation);
+
+        var colorBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+        setColors(gl);
+        gl.enableVertexAttribArray(colorAttributeLocation);
+
+        // Tell the attribute how to get data out of colorBuffer (ARRAY_BUFFER)
+        var size = 3; // 3 components per iteration
+        var type = gl.UNSIGNED_BYTE; // the data is 8bit unsigned bytes
+        var normalize = true; // convert from 0-255 to 0.0-1.0
+        var stride = 0; // 0 = move forward size * sizeof(type) each iteration to get the next color
+        var offset = 0; // start at the beginning of the buffer
+        gl.vertexAttribPointer(
+            colorAttributeLocation, size, type, normalize, stride, offset);
+
+        gl.disableVertexAttribArray(colorAttributeLocation);
+            
+        /////// snow shader setting ///////
+        const snowCoord = new Float32Array([
+            -100.0,  100.0,
+            100.0,  100.0,
+            100.0, -100.0,
+
+            -100.0,  100.0,
+            100.0, -100.0,
+            -100.0, -100.0
+        ]);
+
+        var snowProgram = webglUtils.createProgramFromSources(gl, [snowVS, snowFS]);
+
+        var snowPositionAttributeLocation = gl.getAttribLocation(snowProgram, "a_snowPosition");
+        var timeLocation = gl.getUniformLocation(snowProgram, "u_time");
+        var resolutionLocation = gl.getUniformLocation(snowProgram, "u_resolution");
+
+        var snowVao = gl.createVertexArray();
+        gl.bindVertexArray(snowVao);
+        var snowPositionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, snowPositionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, snowCoord, gl.STATIC_DRAW);
+
+        var colorBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+        setColors(gl);
+        gl.enableVertexAttribArray(colorAttributeLocation);
+        
+        gl.enableVertexAttribArray(snowPositionAttributeLocation);
+        gl.vertexAttribPointer(snowPositionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+        gl.disableVertexAttribArray(snowPositionAttributeLocation);
+
+        function radToDeg(r) {
+            return r * 180 / Math.PI;
+        }
+
+        function degToRad(d) {
+            return d * Math.PI / 180;
+        }
+
+        /////// VAR ///////
+        const CamTargetDistance = 300;
+        const rotateSpeed = 5;
+        var speed = 1;
+        var target = [0, 200, 300];
+        var nearestHead = [1000, 1000, 1000];   //just some big numbers
+        var targetAngleRadians = 0;
+        var horizontalAngle = 0;
+        var verticalAngle = 0;
+        var fieldOfViewRadians = degToRad(60);
+
+        var cameraPosition = [target[0], target[1] + CamTargetDistance, target[2] + CamTargetDistance];
+        var aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+        var zNear = 1;
+        var zFar = 1000;
+        var up = [0, 1, 0];
+
+        const MaxHeadAmount = 20;
+        const MaxInstantiateDistance = 800;
+        var xyz = [];
+        
+        for (let i = 0; i < MaxHeadAmount; ++i) {
+            xyz.push([
+                target[0] + (Math.random() * 2 - 1) * MaxInstantiateDistance, 
+                target[1] + (Math.random() * 2 - 1) * MaxInstantiateDistance, 
+                target[2] + (Math.random() * 2 - 1) * MaxInstantiateDistance
+            ]);
+            //xyz[i] = m4.scaleVector(xyz[i], 2);
+        }
+        
+
+        function Tick(time) {
+            time *= 0.001;
+
+            target[0] += Math.sin(targetAngleRadians) * Math.cos(verticalAngle) * speed;
+            target[1] += Math.sin(verticalAngle) * speed;
+            target[2] -= Math.cos(targetAngleRadians) * Math.cos(verticalAngle) * speed;
+            cameraPosition[0] = target[0] - Math.sin(targetAngleRadians) * CamTargetDistance;
+            // cameraPosition[2] = target[2] - Math.cos(targetAngleRadians) * -CamTargetDistance;
+
+            cameraPosition[1] = target[1] - Math.sin(verticalAngle + 270) * CamTargetDistance + 100;
+            // cameraPosition[2] = target[2] - Math.cos(verticalAngle + 0) * -CamTargetDistance;
+
+            cameraPosition[2] = target[2] - (Math.cos(targetAngleRadians) * Math.cos(verticalAngle)) * -CamTargetDistance;
+            
+            for(let i = 0; i < xyz.length; ++i) {
+                if(m4.distance(target, xyz[i]) < m4.distance(target, nearestHead)) {
+                    nearestHead = xyz[i];
+                }
+
+                if(m4.distance(target, xyz[i]) > MaxInstantiateDistance) {
+                    xyz[i] = [
+                        target[0] + (Math.random() * 2 - 1) * MaxInstantiateDistance, 
+                        target[1] + (Math.random() * 2 - 1) * MaxInstantiateDistance, 
+                        target[2] + (Math.random() * 2 - 1) * MaxInstantiateDistance
+                    ]
+                }
+            }
+
+            if(m4.distance(target, nearestHead) < 100) {
+                location.reload();
+            }
+
+            drawScene(time);
+            requestAnimationFrame(Tick);
+        }
+
+        requestAnimationFrame(Tick);
+
+        { // Setup a ui.
+            webglLessonsUI.setupSlider("#targetHeight", {
+                value: target[1],
+                slide: updateTargetHeight,
+                min: 50,
+                max: 300
+            });
+
+            function updateTargetHeight(event, ui) {
+                target[1] = ui.value;
+                drawScene();
+            }
+        }
+
+        { //input
+            let keys = {
+                w: false,
+                a: false,
+                s: false,
+                d: false,
+                upArrow: false,
+                leftArrow: false,
+                downArrow: false,
+                rightArrow: false,
+            };
+
+            addEventListener("keydown", (event) => {
+                switch (event.key) {
+                    case "w":
+                        keys.w = true;
+                        break;
+                    case "a":
+                        keys.a = true;
+                        break;
+                    case "s":
+                        keys.s = true;
+                        break;
+                    case "d":
+                        keys.d = true;
+                        break;
+                    case "ArrowUp":
+                        keys.upArrow = true;
+                        break;
+                    case "ArrowDown":
+                        keys.downArrow = true;
+                        break;
+                    case "ArrowLeft":
+                        keys.leftArrow = true;
+                        break;
+                    case "ArrowRight":
+                        keys.rightArrow = true;
+                        break;
+                }
+
+                if (keys.w) {
+                    verticalAngle += degToRad(rotateSpeed);
+                }
+                if (keys.s) {
+                    verticalAngle -= degToRad(rotateSpeed);
+                }
+                if (keys.a) {
+                    horizontalAngle += degToRad(rotateSpeed);
+                }
+                if (keys.d) {
+                    horizontalAngle -= degToRad(rotateSpeed);
+                }
+                if (keys.upArrow) {
+                    speed += 0.1;
+                }
+                if (keys.downArrow) {
+                    speed -= 0.1;
+                }
+                if (keys.leftArrow) {
+                    targetAngleRadians -= degToRad(2);
+                }
+                if (keys.rightArrow) {
+                    targetAngleRadians += degToRad(2);
+                }
+
+            });
+
+            addEventListener("keyup", (event) => {
+                switch (event.key) {
+                    case "w":
+                        keys.w = false;
+                        break;
+                    case "a":
+                        keys.a = false;
+                        break;
+                    case "s":
+                        keys.s = false;
+                        break;
+                    case "d":
+                        keys.d = false;
+                        break;
+                    case "ArrowUp":
+                        keys.upArrow = false;
+                        break;
+                    case "ArrowDown":
+                        keys.downArrow = false;
+                        break;
+                    case "ArrowLeft":
+                        keys.leftArrow = false;
+                        break;
+                    case "ArrowRight":
+                        keys.rightArrow = false;
+                        break;
+                }
+            });
+        }
+
+        function drawScene(time) {
+            var numFs = 5;
+            var radius = 600;
+
+            webglUtils.resizeCanvasToDisplaySize(gl.canvas);
+
+            // Tell WebGL how to convert from clip space to pixels
+            gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+            // Clear the canvas AND the depth buffer.
+            gl.clearColor(0, 0, 0, 0);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+            // turn on depth testing
+            gl.enable(gl.DEPTH_TEST);
+
+            // tell webgl to cull faces
+            gl.enable(gl.CULL_FACE);
+
+            // Bind the attribute/buffer set we want.
+            gl.bindVertexArray(vao);
+
+            // Compute the matrix
+            var projectionMatrix = m4.perspective(fieldOfViewRadians, aspect, zNear, zFar);
+
+            if(Math.abs(m4.normalize(m4.subtractVectors(cameraPosition, target))[1]) == 1) {
+                up = [0, 0, .1];
+            } else {
+                up = [0, 1, 0];
+            }
+
+            // Compute the camera's matrix using look at.
+            var cameraMatrix = m4.lookAt(cameraPosition, target, up);
+
+            // Make a view matrix from the camera matrix.
+            var viewMatrix = m4.inverse(cameraMatrix);
+
+            // create a viewProjection matrix. This will both apply perspective
+            // AND move the world so that the camera is effectively the origin
+            var viewProjectionMatrix = m4.multiply(projectionMatrix, viewMatrix);
+
+
+            /////// SNOW ///////
+            var snowVertices = snowCoord / 2;
+            gl.bindBuffer(gl.ARRAY_BUFFER, snowPositionBuffer);
+            gl.enableVertexAttribArray(snowPositionAttributeLocation);
+            
+            gl.useProgram(snowProgram);
+
+            gl.uniform1f(timeLocation, time);
+            gl.uniform2fv(resolutionLocation, [gl.canvas.width, gl.canvas.height]);
+            gl.drawArrays(gl.TRIANGLES, 0, snowVertices);
+
+            gl.disableVertexAttribArray(snowPositionAttributeLocation);
+            
+            ////// HEAD /////
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.enableVertexAttribArray(positionAttributeLocation);
+            gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+            gl.enableVertexAttribArray(colorAttributeLocation);
+
+            gl.useProgram(program);
+
+            for (let i = 0; i < MaxHeadAmount; ++i) {
+                var matrix = m4.lookAt(xyz[i], target, up);
+                drawHead(matrix, viewProjectionMatrix, matrixLocation, numVertices);
+            }
+
+            var playerMat = m4.translation(target[0], target[1], target[2]);
+            
+            playerMat = m4.yRotate(playerMat, -targetAngleRadians);
+            playerMat = m4.xRotate(playerMat, verticalAngle);
+            playerMat = m4.zRotate(playerMat, horizontalAngle);
+            drawHead(playerMat, viewProjectionMatrix, matrixLocation, numVertices);
+            
+            var compassScale = 1/6;
+            var compassPosition = [target[0], target[1] + 100, target[2]];
+            var compassMat = m4.translation(compassPosition[0], compassPosition[1], compassPosition[2]);
+            compassMat = m4.lookAt(compassPosition, nearestHead, up);
+            compassMat = m4.scale(compassMat, compassScale, compassScale, compassScale);
+            
+            drawHead(compassMat, viewProjectionMatrix, matrixLocation, numVertices);
+
+            gl.disableVertexAttribArray(positionAttributeLocation);
+            gl.disableVertexAttribArray(colorAttributeLocation);
+        }
+
+        function drawHead(matrix, viewProjectionMatrix, matrixLocation, numVertices) {
+            // multiply that with the viewProjecitonMatrix
+            matrix = m4.multiply(viewProjectionMatrix, matrix);
+
+            // Set the matrix.
+            gl.uniformMatrix4fv(matrixLocation, false, matrix);
+
+            // Draw the geometry.
+            var primitiveType = gl.TRIANGLES;
+            var offset = 0;
+            gl.drawArrays(primitiveType, offset, numVertices);
+        }
+    }
+
+    function setGeometry(gl) {
+        var positions = new Float32Array(HeadData.positions);
+        var matrix = m4.scale(m4.yRotation(Math.PI), 6, 6, 6);
+        for (var ii = 0; ii < positions.length; ii += 3) {
+            var vector = m4.transformVector(matrix, [positions[ii + 0], positions[ii + 1], positions[ii + 2], 1]);
+            positions[ii + 0] = vector[0];
+            positions[ii + 1] = vector[1];
+            positions[ii + 2] = vector[2];
+        }
+
+        gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+        return positions.length / 3;
+    }
+
+    function setColors(gl) {
+        var normals = HeadData.normals;
+        var colors = new Uint8Array(normals.length);
+        var offset = 0;
+        for (var ii = 0; ii < colors.length; ii += 3) {
+            for (var jj = 0; jj < 3; ++jj) {
+                colors[offset] = (normals[offset] * 0.5 + 0.5) * 255;
+                ++offset;
+            }
+        }
+        gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STATIC_DRAW);
+    }
+
+    main();
+</script>
